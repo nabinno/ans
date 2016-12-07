@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+
+function helperListPlaybooks {
+    {
+        (
+            cd ${ANS_PROJECTS_PATH}
+            for playbook in */*/*.yml; do
+                echo $playbook
+            done
+        )
+    } | sort
+}
+
+function helperExecPlaybook {
+    exec_playbook
+}
+
+function helperUsage {
+    # We can remove the sed fallback once rbenv 0.4.0 is widely available.
+    ans-help "${ANS_COMMAND}" 2>/dev/null || sed -ne '/^#/!q;s/.//;s/.//;1,4d;p' < "$0"
+    [ -z "$1" ] || exit "$1"
+}
+
+function helperParseOptions {
+    MAIN_ARGUMENTS=()
+    OPTION_ARGUMENTS=()
+    local arg
+    for arg in "$@"; do
+        if [ "${arg:0:1}" = "-" ]; then
+            OPTION_ARGUMENTS[${#OPTION_ARGUMENTS[*]}]="$arg"
+        else
+            MAIN_ARGUMENTS[${#MAIN_ARGUMENTS[*]}]="$arg"
+        fi
+    done
+}
+
+function helperGetOptions {
+    local arg args delim
+
+    for arg in "${OPTION_ARGUMENTS[@]}"; do
+        case $arg in
+            # Translate --gnu-long-options to -g (short options)
+            --production) args="${args}p" ;;
+            --staging)    args="${args}s" ;;
+            --verbose)    args="${args}v" ;;
+            --help)       args="${args}h" ;;
+            *) [[ "${arg:0:2}" != '--' ]] \
+                   && [[ "${arg:0:1}" == '-' ]] \
+                   || delim="\"" \
+                       && args="${args}${delim}${arg}${delim} " ;;
+                       # && args="${args}${arg:1:2}" ;;
+        esac
+    done
+
+    echo hello0
+
+    # Reset the positional parameters to the short options
+    eval set -- $args
+
+    echo hello1
+
+    if [ -z "${ENVIRONMENT}" ]; then ENVIRONMENT="production"; fi
+    while getopts "pshv" opt; do
+        case $opt in
+            p) ENVIRONMENT="production" ;;
+            s) ENVIRONMENT="staging" ;;
+            h) helperUsage 0 ;;
+            v) VERBOSE=true ;;
+            \?) echo "Invalid option" >&2
+                exit 0 ;;
+            *) echo hello ;;
+        esac
+    done
+}
+
+function helperCmdline {
+    local status
+
+    echo hello9
+
+    # The first argument contains the playbook to execute.
+    # Show usage instructions if the playbook is not specified.
+    PLAYBOOK="${MAIN_ARGUMENTS[0]}" \
+        && ([ -n "$PLAYBOOK" ] || helperUsage 1)
+
+    # Set PROJECT_NAME, HOST_GROUP_NAME and BOOK_NAME from $PLAYBOOK, if
+    # it is not already set. Then compute the installation prefix.
+    unset PROJECT_NAME
+    unset HOST_GROUP_NAME
+    unset BOOK_NAME
+    [ -n "$PROJECT_NAME" ]    || PROJECT_NAME=$(echo $PLAYBOOK | awk -F'/' '{print $1}')
+    [ -n "$HOST_GROUP_NAME" ] || HOST_GROUP_NAME=$(echo $PLAYBOOK | awk -F'/' '{print $2}')
+    [ -n "$BOOK_NAME" ]       || BOOK_NAME="${PLAYBOOK##*/}"
+
+    if [ -z "$ANS_ROOT" ]; then ANS_ROOT="${HOME}/.ans"; fi
+    builtin_playbook_path="${ANS_PROJECTS_PATH}/${PLAYBOOK}"
+    case "$ANS_COMMAND" in
+        run|test)
+            if [ ! -e "$builtin_playbook_path" ]; then
+                echo "ans-${ANS_COMMAND}: playbook not found: ${PLAYBOOK}"
+                exit 2
+            fi
+            ;;
+        generate)
+            if [ -e "$builtin_playbook_path" ]; then
+                echo "ans-generate: playbook not found: ${PLAYBOOK}"
+                exit 2
+            fi
+            ;;
+    esac
+
+    status=0
+    helperExecPlaybook || status="$?"
+    if [ "$status" == "0" ]; then
+        echo "$(helperCapitalize ${ANS_COMMAND}) $PLAYBOOK succeeded!"
+    else
+        echo "$(helperCapitalize ${ANS_COMMAND}) $PLAYBOOK failed"
+    fi
+    exit "$status"
+}
+
+function helperCapitalize {
+    declare -c tmp
+    tmp=$1
+    echo "$tmp"
+}
+
+function helperSnakeToCamelCase {
+    echo $1 | sed -r 's/(^|_)([a-z])/\U\2/g'
+}

@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Summary: List all projects available to ans
+# Usage: ans project-list
+#
+# Lists all projects found in `${ANS_PROJECTS_PATH}/*'.
+
+set -e
+[ -n "$ANS_DEBUG" ] && set -x
+
+for path in "${ANS_PROJECTS_PATH}/"*; do
+    if [ -d "$path" ]; then
+        echo "${path##*/}"
+    fi
+done

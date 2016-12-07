@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Summary: Display the kept projects directory
+echo $ANS_PROJECTS_PATH

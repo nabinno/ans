@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+#
+# Summary: Run a playbook
+#
+# Usage: ans run [-e|--env] <project/host_group/book>
+#
+#   -e/--env           Run in environment
+#
+set -e
+[ -n "$ANS_DEBUG" ] && set -x
+readonly ARGS="$@"
+
+source helper
+
+# method overriding
+function helperExecPlaybook {
+    local playbook_path="${HOST_GROUP}/$PLAYBOOK"
+    (
+        cd ${ANS_PROJECTS_PATH}/${PROJECT_NAME}
+        source .config/env; wait
+        ansible-playbook -i .config/hosts/${ENVIRONMENT} $playbook_path
+    )
+}
+
+function main {
+    helperParseOptions $ARGS
+    helperGetOptions
+    helperCmdline
+}
+
+# Provide ans completions
+if [ "$1" = "--complete" ]; then
+    helperListPlaybooks
+    exit 0
+fi
+main

@@ -1,0 +1,204 @@
+#!/usr/bin/env bash
+#
+# Summary: Generate a playbook
+#
+# Usage: ans generate <project/host_group/book>
+#
+set -e
+[ -n "$ANS_DEBUG" ] && set -x
+readonly ARGS="$@"
+
+source helper
+
+function list_host_group {
+    {
+        (
+            cd ${ANS_PROJECTS_PATH}
+            for host_group in */*; do
+                echo ${host_group}
+            done
+        )
+    } | sort
+}
+
+function generate_project {
+    local project_path inventories_path
+    project_path="${ANS_PROJECTS_PATH}/${PROJECT_NAME}"
+    inventories_path="${ANS_PROJECTS_PATH}/${PROJECT_NAME}/.config/hosts"
+
+    if [ ! -d "$project_path" ]; then
+        # make directories into project path
+        mkdir -p "$project_path/.share/roles"
+        mkdir -p "$inventories_path/group_vars"
+        mkdir -p "$inventories_path/production"
+        mkdir -p "$inventories_path/staging"
+        touch "$project_path/.share/roles/.keep"
+
+        # setup files into config path
+        echo 'export ANSIBLE_CONFIG=.config/ansible.cfg
+export GCE_INI_PATH=.config/gce.ini' >> "$project_path/.config/env"
+        echo '[defaults]
+hostfile = ./.config/hosts/production
+roles_path = ./.share/roles' >> "$project_path/.config/ansible.cfg"
+        (
+            cd $project_path/.config
+            curl https://raw.githubusercontent.com/ansible/ansible/devel/contrib/inventory/gce.ini -o ./gce.ini
+            chmod +x gce.ini
+        )
+
+        # setup files into inventories path
+        touch "$inventories_path/group_vars/all.yml"
+        touch "$inventories_path/group_vars/production.yml"
+        touch "$inventories_path/group_vars/staging.yml"
+        (
+            cd $inventories_path/production
+            curl https://raw.githubusercontent.com/ansible/ansible/devel/contrib/inventory/gce.py -o ./gce.py
+            chmod +x gce.py
+            sed -i -e "gce_service_account_email_address = ansible@utagaki-v1.iam.gserviceaccount.com" gce.py
+            sed -i -e "gce_service_account_pem_file_path = ~/.gcp/utagaki-v1.json" gce.py
+            sed -i -e "gce_project_id = utagaki-v1" gce.py
+        )
+        echo '[localhost]
+127.0.0.1 ansible_connection=local
+
+[all:children]
+localhost' >> "$inventories_path/production/hosts.common"
+        echo '[production:children]' >> "$inventories_path/production/hosts"
+        echo '[staging:children]' >> "$inventories_path/staging/hosts"
+        (
+            cd $inventories_path/staging
+            ln -s ../production/gce.py
+            ln -s ../production/hosts.common
+        )
+    fi
+}
+
+function generate_host_group {
+    local inventories_path host_group_path tmp
+    inventories_path="${ANS_PROJECTS_PATH}/${PROJECT_NAME}/.config/hosts"
+    host_group_path="${ANS_PROJECTS_PATH}/${PROJECT_NAME}/${HOST_GROUP_NAME}"
+
+    if [ ! -d "$host_group_path" ]; then
+        # make directories into host group path
+        mkdir -p "$host_group_path/vars"
+        echo 'project_id: YOUR_PROJECT_ID
+service_account_email: demo-ansible@YOUR_PROJECT_ID.iam.gserviceaccount.com
+credentials_file: /home/ansible-user/demo-ansible.json' >> "$host_group_path/vars/auth.yml"
+        echo "region: us-central1
+members: us-central1-a/${HOST_GROUP_NAME}1,us-central1-a/${HOST_GROUP_NAME}3,us-central1-b/${HOST_GROUP_NAME}2,us-central1-b/${HOST_GROUP_NAME}4" >> "$host_group_path/vars/lb.yml"
+        echo "machine_type: n1-standard-1
+image: debian-7" >> "$host_group_path/vars/machines.yml"
+        echo "names_zonea: ${HOST_GROUP_NAME}1,${HOST_GROUP_NAME}3
+zonea: us-central1-a
+lb_membersa: us-central1-a/${HOST_GROUP_NAME}1,us-central1-a/${HOST_GROUP_NAME}3" >>  "$host_group_path/vars/zonea.yml"
+        echo "names_zoneb: ${HOST_GROUP_NAME}2,${HOST_GROUP_NAME}4
+zoneb: us-central1-b
+lb_membersa: us-central1-b/${HOST_GROUP_NAME}2,us-central1-b/${HOST_GROUP_NAME}4" >>  "$host_group_path/vars/zoneb.yml"
+
+        # setup files into inventories path
+        if [ ! -d "$inventories_path/production" ] || [ ! -d "$inventories_path/staging" ]; then
+            mkdir -p "$inventories_path/production"
+            mkdir -p "$inventories_path/staging"
+        fi
+        tmp="[${HOST_GROUP_NAME}]\n${HOST_GROUP_NAME}[1:2]\n[${HOST_GROUP_NAME}:vars]\nSRV_ENVIROMENT='PRD-APP-SERVER'\n"
+        sed -i "1i $tmp" "$inventories_path/production/hosts"
+        sed -i "1i $tmp" "$inventories_path/staging/hosts"
+        sed -i -e "s/\(\[production:children\]\)/\1\n${HOST_GROUP_NAME}/g" "$inventories_path/production/hosts"
+        sed -i -e "s/\(\[staging:children\]\)/\1\n${HOST_GROUP_NAME}/g"    "$inventories_path/staging/hosts"
+    fi
+}
+
+function generate_playbook {
+    local playbook_path host_group_path roles_path tmp
+    book_path="${ANS_PROJECTS_PATH}/${PROJECT_NAME}/${HOST_GROUP_NAME}/${BOOK_NAME}.yml"
+    host_group_path="${ANS_PROJECTS_PATH}/${PROJECT_NAME}/${HOST_GROUP_NAME}"
+    roles_path="${ANS_PROJECTS_PATH}/${PROJECT_NAME}/.share/roles"
+
+    if [ ! -f $book_path ]; then
+        # setup book file
+        case "${BOOK_NAME}" in
+            create)
+                mkdir -p "$host_group_path/create"
+                echo '- include: create/instance.yml
+- include: create/middleware.yml
+- include: create/network.yml' >> "$host_group_path/create.yml"
+                echo '- hosts: local
+  gather_facts: false
+  vars_files:
+    - ../vars/auth
+    - ../vars/machines
+    - ../vars/zonea
+    - ../vars/zoneb
+  roles:
+    - create-instance' >> "$host_group_path/create/instance.yml"
+                echo "- hosts: ${BOOK_NAME}_ips
+  become: yes
+  become_method: sudo
+  roles:
+    - provision-base
+    - provision-mysql
+    - provision-rbenv
+    - provision-nginx
+    - provision-td-agent" >> "$host_group_path/create/middleware.yml"
+                echo '- hosts: local
+  gather_facts: false
+  vars_files:
+    - ../vars/auth
+    - ../vars/machines
+    - ../vars/zonea
+    - ../vars/zoneb
+  roles:
+    - create-network' >> "$host_group_path/create/network.yml"
+                ;;
+            destroy)
+                echo '- hosts: local
+  gather_facts: false
+  vars_files:
+    - vars/auth
+    - vars/machines
+    - vars/zonea
+    - vars/zoneb
+  roles:
+    - destroy' >> $playbook_path
+                ;;
+            *)
+                tmp="- hosts: ${HOST_GROUP_NAME}_ips
+  become: yes
+  become_method: sudo
+  roles:
+    - ${BOOK_NAME}"
+                echo "$tmp" >> $playbook_path
+                ;;
+        esac
+
+        # make directories into roles path and setup role files
+        if [ ! -d "${roles_path}/${BOOK_NAME}" ]; then
+            mkdir -p "${roles_path}/${BOOK_NAME}/tasks"
+            mkdir -p "${roles_path}/${BOOK_NAME}/files"
+            mkdir -p "${roles_path}/${BOOK_NAME}/templates"
+            mkdir -p "${roles_path}/${BOOK_NAME}/vars"
+            touch "${roles_path}/${BOOK_NAME}/tasks/.keep"
+            touch "${roles_path}/${BOOK_NAME}/files/.keep"
+            touch "${roles_path}/${BOOK_NAME}/templates/.keep"
+            touch "${roles_path}/${BOOK_NAME}/vars/.keep"
+        fi
+    fi
+}
+
+function exec_playbook {
+    generate_project
+    generate_host_group
+    generate_playbook
+}
+
+function main {
+    helperParseOptions $ARGS
+    helperCmdline
+}
+
+# Provide ans completions
+if [ "$1" = "--complete" ]; then
+    list_host_group
+    exit 0
+fi
+main

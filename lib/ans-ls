@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Summary: List all playbook
+# Usage: ans ls
+#
+# Lists all playbook found in `$ANS_PROJECTS_PATH}/:project/:host_group/:book.yml'.
+
+set -e
+[ -n "$ANS_DEBUG" ] && set -x
+
+(
+    cd ${ANS_PROJECTS_PATH}
+
+    project_names=()
+    project_names=$(
+        {
+            for path in */*/*.yml; do
+                if [ -f "$path" ]; then
+                    echo $path | awk -F'/' '{print $1}'
+                fi
+            done
+        } | sort | uniq)
+
+    echo 'List Playbooks:'
+    for path in */*/*.yml; do
+        if [ -f "$path" ]; then
+            echo $path
+        fi
+    done
+
+    echo
+    echo 'List Instances:'
+    if [ -z "${ENVIRONMENT}" ]; then ENVIRONMENT="production"; fi
+    for d in "${project_names[@]}"; do
+        (
+            cd $d; wait
+            source .config/env; wait
+            .config/hosts/${ENVIRONMENT}/gce.py --list
+            ansible all -i .config/hosts/${ENVIRONMENT}/gce.py -m setup
+        )
+    done
+)

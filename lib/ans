@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+set -e
+export -n CDPATH
+if [ "$1" = "--debug" ]; then
+    export ANS_DEBUG=1
+    shift
+fi
+if [ -n "$ANS_DEBUG" ]; then
+    export PS4='+ [${BASH_SOURCE##*/}:${LINENO}] '
+    set -x
+fi
+READLINK=$(type -p greadlink readlink | head -1)
+if [ -z "$READLINK" ]; then
+    echo "ans: cannot find readlink - are you missing GNU coreutils?" >&2
+    exit 1
+fi
+
+function resolve_link {
+    $READLINK "$1"
+}
+
+function abs_dirname {
+    local cwd="$(pwd)"
+    local path="$1"
+    while [ -n "$path" ]; do
+        cd "${path%/*}"
+        local name="${path##*/}"
+        path="$(resolve_link "$name" || true)"
+    done
+    pwd
+    cd "$cwd"
+}
+
+if [ -z "${ANS_ROOT}" ]; then
+    ANS_ROOT="${HOME}/.ans"
+else
+    ANS_ROOT="${ANS_ROOT%/}"
+fi
+export ANS_ROOT
+
+if [ -z "${ANS_PROJECTS_PATH}" ]; then
+    ANS_PROJECTS_PATH="${ANS_ROOT}/projects"
+else
+    ANS_PROJECTS_PATH="${ANS_PROJECTS_PATH%/}"
+fi
+export ANS_PROJECTS_PATH
+
+if [ -z "${ANS_DIR}" ]; then
+    ANS_DIR="$(pwd)"
+else
+    cd "$ANS_DIR" 2>/dev/null || {
+        echo "ans: cannot change working directory to \`$ANS_DIR'"
+        exit 1
+    } >&2
+    ANS_DIR="$(pwd)"
+    cd "$OLDPWD"
+fi
+export ANS_DIR
+
+shopt -s nullglob
+
+bin_path="$(abs_dirname "$0")"
+for plugin_bin in "${ANS_ROOT}/plugins/"*/bin; do
+    bin_path="${bin_path}:${plugin_bin}"
+done
+export PATH="${bin_path}:${PATH}"
+
+hook_path="${ANS_HOOK_PATH}:${ANS_ROOT}/ans.d:/usr/local/etc/ans.d:/etc/ans.d:/usr/lib/ans/hooks"
+for plugin_hook in "${ANS_ROOT}/plugins/"*/etc/ans.d; do
+    hook_path="${hook_path}:${plugin_hook}"
+done
+export ANS_HOOK_PATH="$hook_path"
+
+shopt -u nullglob
+
+command="$1"
+export ANS_COMMAND="$command"
+case "$command" in
+    "" | "-h" | "--help" )
+        echo -e "$(ans---version)\n$(ans-help)" >&2
+        ;;
+    "-v" )
+        exec ans---version
+        ;;
+    * )
+        command_path="$(command -v "ans-$command" || true)"
+        if [ -z "$command_path" ]; then
+            echo "ans: no such command \`$command'" >&2
+            exit 1
+        fi
+        shift 1
+        exec "$command_path" "$@"
+        ;;
+esac
